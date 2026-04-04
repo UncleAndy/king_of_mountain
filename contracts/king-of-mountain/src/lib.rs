@@ -2,7 +2,7 @@
 extern crate alloc;
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Env, String, Address};
-use crate::StorageDataKey::{KingMessage, LastKingAmount};
+use crate::StorageDataKey::{AdminAddress, KingMessage, LastKingAmount};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -15,6 +15,7 @@ pub struct UserEntry {
 pub enum StorageDataKey {
     KingMessage,
     LastKingAmount,
+    AdminAddress,
 }
 
 #[contract]
@@ -72,6 +73,28 @@ impl KingOfMountain {
             message: String::from_str(&env, "--- No message yet ---"),
         });
         message.message
+    }
+
+    // Вызываем один раз при деплое
+    pub fn init(env: Env, admin: Address) {
+        env.storage().instance().set(&AdminAddress, &admin);
+    }
+
+    pub fn withdraw(env: Env, to: Address, token_address: Address, amount: i128) {
+        // 0. Извлекаем админа из хранилища
+        let admin: Address = env.storage().instance()
+            .get(&AdminAddress)
+            .expect("Contract not initialized");
+
+        // 1. Опционально: проверить, кто имеет право выводить средства (например, админ)
+        admin.require_auth();
+
+        // 2. Создаем клиент токена
+        let token_client = token::Client::new(&env, &token_address);
+
+        // 3. Вызываем метод transfer
+        // Отправитель — адрес текущего контракта
+        token_client.transfer(&env.current_contract_address(), &to, &amount);
     }
 }
 
