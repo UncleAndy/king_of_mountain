@@ -10,20 +10,20 @@ fn test() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let admin = Address::generate(&env);
-
-    let contract_id = env.register(KingOfMountain, ());
-    let client = KingOfMountainClient::new(&env, &contract_id);
-    client.init(&admin);
-
-    let admin_saved = client.get_admin();
-    assert_eq!(admin_saved, admin);
-
-    // 2. Регистрируем контракт ТОКЕНА (имитируем USDC или XLM)
+    // Регистрируем контракт ТОКЕНА (имитируем USDC или XLM)
     let admin = Address::generate(&env);
     let token_address = env.register_stellar_asset_contract_v2(admin.clone());
     let token_admin = TokenClient::new(&env, &token_address.address());
     let token_user_client = token::Client::new(&env, &token_address.address());
+
+    let admin = Address::generate(&env);
+
+    let contract_id = env.register(KingOfMountain, ());
+    let client = KingOfMountainClient::new(&env, &contract_id);
+    client.init(&admin, &token_address.address());
+
+    let admin_saved = client.get_admin();
+    assert_eq!(admin_saved, admin);
 
     let amount: i128 = 100;
 
@@ -89,7 +89,7 @@ fn test() {
 
     // Тест4: Перевод баланса контракта админу
     let contract_balance = token_user_client.balance(&contract_id);
-    client.withdraw(&admin, &token_address.address(), &contract_balance);
+    client.withdraw();
     assert_eq!(token_user_client.balance(&contract_id), 0);
     assert_eq!(token_user_client.balance(&admin), contract_balance);
 }

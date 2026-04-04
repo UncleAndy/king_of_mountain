@@ -1,6 +1,6 @@
 [package]
-name = "hello-world"
-version = "0.0.0"
+name = "king-of-mountain"
+version = "0.0.1"
 edition = "2021"
 publish = false
 
@@ -12,4 +12,4 @@ doctest = false
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
-soroban-sdk = { workspace = true, features = ["testutils"] }
+soroban-sdk = { workspace = true, features = ["testutils", "alloc"] }

@@ -1,8 +1,7 @@
 #![no_std]
-extern crate alloc;
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Env, String, Address};
-use crate::StorageDataKey::{AdminAddress, KingMessage, LastKingAmount};
+use crate::StorageDataKey::{AdminAddress, KingMessage, LastKingAmount, TokenAddress};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -16,6 +15,7 @@ pub enum StorageDataKey {
     KingMessage,
     LastKingAmount,
     AdminAddress,
+    TokenAddress,
 }
 
 #[contract]
@@ -33,6 +33,11 @@ pub struct KingOfMountain;
 #[contractimpl]
 impl KingOfMountain {
     pub fn capture(env: Env, user: Address, token_address: Address, amount: i128, msg: String) -> bool {
+        // Проверяем разрешен-ли текущий токен
+        if !Self::is_token_enabled(env.clone(), &token_address) {
+            panic!("Token not enabled for this contract");
+        }
+
         // Сначала сравниваем переданное количество токенов с последним захватом. Если оно меньше или равно, то не пропускаем.
         let key = LastKingAmount;
         let last_amount = env.storage().persistent().get(&key).unwrap_or(0);
@@ -76,7 +81,7 @@ impl KingOfMountain {
     }
 
     // Вызываем один раз при деплое
-    pub fn init(env: Env, admin: Address) {
+    pub fn init(env: Env, admin: Address, token_address: Address) {
         admin.require_auth();
 
         // Проверяем, есть ли уже админ в хранилище
@@ -85,6 +90,7 @@ impl KingOfMountain {
         }
 
         env.storage().instance().set(&AdminAddress, &admin);
+        env.storage().instance().set(&TokenAddress, &token_address);
     }
 
     pub fn get_admin(env: Env) -> Address {
@@ -95,21 +101,34 @@ impl KingOfMountain {
         admin
     }
 
-    pub fn withdraw(env: Env, to: Address, token_address: Address, amount: i128) {
+    pub fn withdraw(env: Env) {
         // 0. Извлекаем админа из хранилища
         let admin: Address = env.storage().instance()
             .get(&AdminAddress)
+            .expect("Contract not initialized");
+
+        let token_enabled: Address = env.storage().instance()
+            .get(&TokenAddress)
             .expect("Contract not initialized");
 
         // 1. Опционально: проверить, кто имеет право выводить средства (например, админ)
         admin.require_auth();
 
         // 2. Создаем клиент токена
-        let token_client = token::Client::new(&env, &token_address);
+        let token_client = token::Client::new(&env, &token_enabled);
+        let balance = token_client.balance(&env.current_contract_address());
 
         // 3. Вызываем метод transfer
         // Отправитель — адрес текущего контракта
-        token_client.transfer(&env.current_contract_address(), &to, &amount);
+        token_client.transfer(&env.current_contract_address(), &admin, &balance);
+    }
+
+    fn is_token_enabled(env: Env, token_address: &Address) -> bool {
+        let token_enabled: Address = env.storage().instance()
+            .get(&TokenAddress)
+            .expect("Contract not initialized");
+
+        token_enabled == *token_address
     }
 }
 
