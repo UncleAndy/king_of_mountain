@@ -16,6 +16,9 @@ fn test() {
     let client = KingOfMountainClient::new(&env, &contract_id);
     client.init(&admin);
 
+    let admin_saved = client.get_admin();
+    assert_eq!(admin_saved, admin);
+
     // 2. Регистрируем контракт ТОКЕНА (имитируем USDC или XLM)
     let admin = Address::generate(&env);
     let token_address = env.register_stellar_asset_contract_v2(admin.clone());

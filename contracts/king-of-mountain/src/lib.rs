@@ -77,7 +77,22 @@ impl KingOfMountain {
 
     // Вызываем один раз при деплое
     pub fn init(env: Env, admin: Address) {
+        admin.require_auth();
+
+        // Проверяем, есть ли уже админ в хранилище
+        if env.storage().instance().has(&AdminAddress) {
+            panic!("Contract already initialized");
+        }
+
         env.storage().instance().set(&AdminAddress, &admin);
+    }
+
+    pub fn get_admin(env: Env) -> Address {
+        let admin: Address = env.storage().instance()
+            .get(&AdminAddress)
+            .expect("Contract not initialized");
+
+        admin
     }
 
     pub fn withdraw(env: Env, to: Address, token_address: Address, amount: i128) {
