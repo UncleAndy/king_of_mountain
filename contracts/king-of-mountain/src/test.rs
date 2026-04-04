@@ -1,0 +1,81 @@
+#![cfg(test)]
+
+use super::*;
+use soroban_sdk::{Env, String, token};
+use soroban_sdk::testutils::Address as _;
+use soroban_sdk::token::StellarAssetClient as TokenClient;
+
+#[test]
+fn test() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(KingOfMountain, ());
+    let client = KingOfMountainClient::new(&env, &contract_id);
+
+    // 2. Регистрируем контракт ТОКЕНА (имитируем USDC или XLM)
+    let admin = Address::generate(&env);
+    let token_address = env.register_stellar_asset_contract_v2(admin.clone());
+    let token_admin = TokenClient::new(&env, &token_address.address());
+    let token_user_client = token::Client::new(&env, &token_address.address());
+
+    let amount: i128 = 100;
+
+    let user = Address::generate(&env);
+
+    // Проверяем возврат текущего сообщения контрактом
+    let current_message = client.message();
+    assert_eq!(current_message, String::from_str(&env, "--- No message yet ---"));
+
+    // Даем пользователю токены
+    token_admin.mint(&user, &10000i128);
+    token_user_client.approve(&user, &contract_id, &amount, &1000);
+    let msg1 = String::from_str(&env, "Hello! I am KING!!!");
+
+    let try1 = client.capture(
+        &user,
+        &token_address.address(),
+        &amount,
+        &msg1,
+    );
+
+    assert!(try1);
+    assert_eq!(token_user_client.balance(&contract_id), amount);
+
+    let current_message = client.message();
+    assert_eq!(current_message, msg1);
+
+    // Логика работы контракта
+
+    let amount_low = 10;
+    token_user_client.approve(&user, &contract_id, &amount_low, &1000);
+    let msg2 = String::from_str(&env, "Hello! I am SECOND KING!!!");
+
+    let try2 = client.capture(
+        &user,
+        &token_address.address(),
+        &amount_low,
+        &msg2,
+    );
+    assert!(!try2);
+    assert_eq!(token_user_client.balance(&contract_id), amount);
+
+    let current_message = client.message();
+    assert_eq!(current_message, msg1);
+
+    let amount_high = 1000;
+    token_user_client.approve(&user, &contract_id, &amount_high, &1000);
+    let msg3 = String::from_str(&env, "Hello! I am THIRD KING!!!");
+
+    let try3 = client.capture(
+        &user,
+        &token_address.address(),
+        &amount_high,
+        &msg3,
+    );
+    assert!(try3);
+    assert_eq!(token_user_client.balance(&contract_id), amount+amount_high);
+
+    let current_message = client.message();
+    assert_eq!(current_message, msg3);
+}

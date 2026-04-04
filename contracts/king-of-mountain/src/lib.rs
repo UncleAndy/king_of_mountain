@@ -1,0 +1,78 @@
+#![no_std]
+extern crate alloc;
+
+use soroban_sdk::{contract, contractimpl, contracttype, token, Env, String, Address};
+use crate::StorageDataKey::{KingMessage, LastKingAmount};
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UserEntry {
+    pub user: Address,
+    pub message: String,
+}
+
+#[contracttype]
+pub enum StorageDataKey {
+    KingMessage,
+    LastKingAmount,
+}
+
+#[contract]
+pub struct KingOfMountain;
+
+// This is a sample contract. Replace this placeholder with your own contract logic.
+// A corresponding test example is available in `test.rs`.
+//
+// For comprehensive examples, visit <https://github.com/stellar/soroban-examples>.
+// The repository includes use cases for the Stellar ecosystem, such as data storage on
+// the blockchain, token swaps, liquidity pools, and more.
+//
+// Refer to the official documentation:
+// <https://developers.stellar.org/docs/build/smart-contracts/overview>.
+#[contractimpl]
+impl KingOfMountain {
+    pub fn capture(env: Env, user: Address, token_address: Address, amount: i128, msg: String) -> bool {
+        // Сначала сравниваем переданное количество токенов с последним захватом. Если оно меньше или равно, то не пропускаем.
+        let key = LastKingAmount;
+        let last_amount = env.storage().persistent().get(&key).unwrap_or(0);
+        if amount <= last_amount {
+            return false;
+        }
+
+        user.require_auth();
+
+        // Если больше - переводим токены от пользователя контракту
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer_from(
+            &env.current_contract_address(), // Кто инициирует (spender)
+            &user,                           // У кого забираем (from)
+            &env.current_contract_address(), // Кому отдаем (to)
+            &amount                          // Сколько
+        );
+
+        // Сохраняем последнюю сумму
+        env.storage().persistent().set(&key, &amount);
+
+        // Сохраняем сообщение о захвате в хранилище
+        let key = KingMessage;
+        let message = UserEntry {
+            user: user.clone(),
+            message: msg.clone(),
+        };
+        env.storage().persistent().set(&key, &message);
+
+        true
+    }
+
+    pub fn message(env: Env) -> String {
+        let key = KingMessage;
+        let message = env.storage().persistent().get(&key).unwrap_or(UserEntry {
+            // Получаем адрес текущего контракта
+            user: env.current_contract_address(),
+            message: String::from_str(&env, "--- No message yet ---"),
+        });
+        message.message
+    }
+}
+
+mod test;
