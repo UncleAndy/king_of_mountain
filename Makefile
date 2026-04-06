@@ -54,9 +54,12 @@ mainnet-update:
 		--rpc-url 'https://soroban-rpc.mainnet.stellar.gateway.fm' \
 		--network-passphrase 'Public Global Stellar Network ; September 2015'))
 	@echo "Новый хеш кода: $(NEW_HASH)"
-	#stellar contract update \
-	#	--id CC7KVTEWATMWTRZYWLXRMXDPVD6MIKDBROOJCYLGOHGEGFQBPFNBZ3ZI \
+	#stellar contract invoke \
+	#	--id CAFXUALXFPTBTLSRCDSMJXNPSN3AVL2ZPXJUDDHVTUTLRX5SCNP2SISM \
 	#	--source my-real-admin \
 	#	--rpc-url 'https://soroban-rpc.mainnet.stellar.gateway.fm' \
 	#	--network-passphrase 'Public Global Stellar Network ; September 2015' \
-	#	--new-code-hash $(NEW_HASH)
+	#	-- \
+	#	upgrade \
+	#	--new_wasm_hash $(NEW_HASH)
+
