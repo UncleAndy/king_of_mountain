@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Env, String, Address, BytesN};
-use crate::StorageDataKey::{AdminAddress, KingMessage, LastKingAmount, TokenAddress};
+use crate::StorageDataKey::{AdminAddress, KingMessage, LastKingAmount, TokenAddress, Version};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -12,6 +12,7 @@ pub struct UserEntry {
 
 #[contracttype]
 pub enum StorageDataKey {
+    Version,
     KingMessage,
     LastKingAmount,
     AdminAddress,
@@ -38,14 +39,15 @@ impl KingOfMountain {
     }
 
     pub fn version() -> u32 {
-        1
+        2
     }
 
     /// Функция для обновления кода контракта
-    /// new_wasm_hash — это SHA-256 хеш нового Wasm-файла, уже загруженного в сеть
-    /// stellar contract upload --wasm path/to/new_contract.wasm --source-account admin --network testnet
-    /// stellar contract invoke --id <CONTRACT_ID> --source-account admin --network testnet -- upgrade --new_wasm_hash <NEW_WASM_HASH>
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        // new_wasm_hash — это SHA-256 хеш нового Wasm-файла, уже загруженного в сеть
+        // stellar contract upload --wasm path/to/new_contract.wasm --source-account admin --network testnet
+        // stellar contract invoke --id <CONTRACT_ID> --source-account admin --network testnet -- upgrade --new_wasm_hash <NEW_WASM_HASH>
+
         // 1. Получаем адрес администратора из хранилища
         let admin: Address = env.storage().instance().get(&AdminAddress).unwrap();
 
@@ -54,13 +56,40 @@ impl KingOfMountain {
 
         // 3. Вызываем системную функцию для замены Wasm-кода по текущему адресу
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        // 4. Вызываем метод миграции уже нового контракта
+        // С этого момента выполняется код НОВОГО WASM.
+        // Мы вызываем внутреннюю функцию нового контракта.
+        Self::migrate(env);
     }
 
-    pub fn capture(env: Env, user: Address, token_address: Address, amount: i128, msg: String) -> bool {
-        // Проверяем разрешен-ли текущий токен
-        if !Self::is_token_enabled(env.clone(), &token_address) {
-            panic!("Token not enabled for this contract");
+    /// Функция для миграции данных при обновлении контракта. Вызывается внутри функции upgrade уже после замены кода.
+    pub fn migrate(env: Env) {
+        // 1. Получаем адрес администратора из хранилища
+        let admin: Address = env.storage().instance().get(&AdminAddress).unwrap();
+
+        // 2. Проверяем подпись администратора (обязательно!)
+        admin.require_auth();
+
+        // 3. Обновляем версию контракта в хранилище. Это позволит нам отслеживать, что контракт был успешно обновлен.
+        let old_version: u32 = env.storage().instance().get(&Version).unwrap_or(0);
+        env.storage().instance().set(&Version, &Self::version());
+
+        // 4. Обновляем данные контракта если нужно
+        if old_version != Self::version() {
+            // Здесь можно добавить логику для обновления данных контракта, например,
+            // перенос данных из старой версии в новую, если структура данных изменилась.
+            // В нашем случае структура данных не меняется, поэтому просто оставляем это место для примера.
         }
+    }
+
+    /// Функция для захвата горы. Пользователь должен отправить определенное количество токенов, чтобы стать новым королем.
+    pub fn capture(env: Env, user: Address, amount: i128, msg: String) -> bool {
+        user.require_auth();
+
+        let token_address: Address = env.storage().instance()
+            .get(&TokenAddress)
+            .expect("Contract not initialized");
 
         // Сначала сравниваем переданное количество токенов с последним захватом. Если оно меньше или равно, то не пропускаем.
         let key = LastKingAmount;
@@ -68,8 +97,6 @@ impl KingOfMountain {
         if amount <= last_amount {
             return false;
         }
-
-        user.require_auth();
 
         // Если больше - переводим токены от пользователя контракту
         let token_client = token::Client::new(&env, &token_address);
@@ -83,7 +110,7 @@ impl KingOfMountain {
         // Сохраняем последнюю сумму
         env.storage().persistent().set(&key, &amount);
 
-        // Сохраняем сообщение о захвате в хранилище
+        // Сохраняем сообщение нового короля в хранилище
         let key = KingMessage;
         let message = UserEntry {
             user: user.clone(),
@@ -94,6 +121,7 @@ impl KingOfMountain {
         true
     }
 
+    /// Получение сообщения короля
     pub fn message(env: Env) -> String {
         let key = KingMessage;
         let message = env.storage().persistent().get(&key).unwrap_or(UserEntry {
@@ -104,19 +132,7 @@ impl KingOfMountain {
         message.message
     }
 
-    // Вызываем один раз при деплое
-    pub fn init(env: Env, admin: Address, token_address: Address) {
-        admin.require_auth();
-
-        // Проверяем, есть ли уже админ в хранилище
-        if env.storage().instance().has(&AdminAddress) {
-            panic!("Contract already initialized");
-        }
-
-        env.storage().instance().set(&AdminAddress, &admin);
-        env.storage().instance().set(&TokenAddress, &token_address);
-    }
-
+    /// Получение адреса администратора
     pub fn get_admin(env: Env) -> Address {
         let admin: Address = env.storage().instance()
             .get(&AdminAddress)
@@ -125,6 +141,7 @@ impl KingOfMountain {
         admin
     }
 
+    /// Вывод средств администратору (вызов разрешен только администратору)
     pub fn withdraw(env: Env) {
         // 0. Извлекаем админа из хранилища
         let admin: Address = env.storage().instance()
@@ -145,14 +162,6 @@ impl KingOfMountain {
         // 3. Вызываем метод transfer
         // Отправитель — адрес текущего контракта
         token_client.transfer(&env.current_contract_address(), &admin, &balance);
-    }
-
-    fn is_token_enabled(env: Env, token_address: &Address) -> bool {
-        let token_enabled: Address = env.storage().instance()
-            .get(&TokenAddress)
-            .expect("Contract not initialized");
-
-        token_enabled == *token_address
     }
 }
 

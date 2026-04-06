@@ -3,32 +3,34 @@ build:
 		stellar contract build
 
 testnet-deploy: build
-	@contract_id=$$(stellar contract deploy \
+	$(eval ADMIN := $(shell stellar keys address deployer))
+	$(eval TOKEN := $(shell stellar contract id asset --network testnet --asset native))
+	@echo "Admin: $(ADMIN)"
+	@echo "Token: $(TOKEN)"
+	stellar contract deploy \
 		--wasm target/wasm32v1-none/release/king_of_mountain.wasm \
-		--source deployer \
-		--network testnet) && \
-	echo "Deployed Contract ID: $$contract_id" && \
-	stellar contract invoke \
-		--id $$contract_id \
 		--source deployer \
 		--network testnet \
 		-- \
-		init \
-		--admin $$(stellar keys address deployer) \
-		--token_address $$(stellar contract id asset --network testnet --asset native)
+		--admin $(ADMIN) \
+		--token_address $(TOKEN)
+
+testnet-withdraw:
+	stellar contract invoke \
+		--id CCQMOG2ZD7KJH2R52PRVSIBMZLX5XITB4EVUQSMGTZFKHTJUABN2H7TU \
+		--source-account deployer \
+		--network testnet \
+		--\
+		 withdraw
 
 mainnet-deploy: build
-	@contract_id=$$(stellar contract deploy \
+	$(eval ADMIN := $(shell stellar keys address my-real-admin))
+	@echo "Admin: $(ADMIN)"
+	stellar contract deploy \
 		--wasm target/wasm32v1-none/release/king_of_mountain.wasm \
-		--source my-real-admin \
-		--rpc-url 'https://soroban-rpc.mainnet.stellar.gateway.fm' \
-		--network-passphrase 'Public Global Stellar Network ; September 2015') && \
-	echo "Deployed Contract ID: $$contract_id" && \
-	stellar contract invoke \
-		--id $$contract_id \
-		--source my-real-admin \
+		--source deployer \
 		--rpc-url 'https://soroban-rpc.mainnet.stellar.gateway.fm' \
 		--network-passphrase 'Public Global Stellar Network ; September 2015' \
-		-- init \
-		--admin $$(stellar keys address my-real-admin) \
+		-- \
+		--admin $(ADMIN) \
 		--token_address CB2IWR2T3Q7GQPZLVEG7VH5KEMNTNOJNQEZCSN2GF4J4LQSUPRAKJIUP

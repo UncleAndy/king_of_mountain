@@ -18,12 +18,11 @@ fn test() {
 
     let admin = Address::generate(&env);
 
-    let contract_id = env.register(KingOfMountain, ());
+    let contract_id = env.register(KingOfMountain, (admin.clone(), token_address.address()));
     let client = KingOfMountainClient::new(&env, &contract_id);
-    client.init(&admin, &token_address.address());
 
     let admin_saved = client.get_admin();
-    assert_eq!(admin_saved, admin);
+    assert_eq!(admin_saved, admin.clone());
 
     let amount: i128 = 100;
 
@@ -42,7 +41,6 @@ fn test() {
 
     let try1 = client.capture(
         &user,
-        &token_address.address(),
         &amount,
         &msg1,
     );
@@ -60,7 +58,6 @@ fn test() {
 
     let try2 = client.capture(
         &user,
-        &token_address.address(),
         &amount_low,
         &msg2,
     );
@@ -77,7 +74,6 @@ fn test() {
 
     let try3 = client.capture(
         &user,
-        &token_address.address(),
         &amount_high,
         &msg3,
     );
