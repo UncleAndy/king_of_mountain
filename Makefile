@@ -45,7 +45,7 @@ mainnet-deploy: build
 		--network-passphrase 'Public Global Stellar Network ; September 2015' \
 		-- \
 		--admin $(shell stellar keys address my-real-admin) \
-		--token_address CB2IWR2T3Q7GQPZLVEG7VH5KEMNTNOJNQEZCSN2GF4J4LQSUPRAKJIUP
+		--token_address CDUYP3U6HGTOBUNQD2WTLWNMNADWMENROKZZIHGEVGKIU3ZUDF42CDOK
 
 mainnet-update:
 	$(eval NEW_HASH := $(shell stellar contract install \
