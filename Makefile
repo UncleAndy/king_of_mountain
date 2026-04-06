@@ -24,13 +24,25 @@ testnet-withdraw:
 		 withdraw
 
 mainnet-deploy: build
-	$(eval ADMIN := $(shell stellar keys address my-real-admin))
-	@echo "Admin: $(ADMIN)"
 	stellar contract deploy \
 		--wasm target/wasm32v1-none/release/king_of_mountain.wasm \
-		--source deployer \
+		--source my-real-admin \
 		--rpc-url 'https://soroban-rpc.mainnet.stellar.gateway.fm' \
 		--network-passphrase 'Public Global Stellar Network ; September 2015' \
 		-- \
-		--admin $(ADMIN) \
+		--admin $(shell stellar keys address my-real-admin) \
 		--token_address CB2IWR2T3Q7GQPZLVEG7VH5KEMNTNOJNQEZCSN2GF4J4LQSUPRAKJIUP
+
+mainnet-update:
+	$(eval NEW_HASH := $(shell stellar contract install \
+		--wasm target/wasm32v1-none/release/king_of_mountain.wasm \
+		--source my-real-admin \
+		--rpc-url 'https://soroban-rpc.mainnet.stellar.gateway.fm' \
+		--network-passphrase 'Public Global Stellar Network ; September 2015'))
+	@echo "Новый хеш кода: $(NEW_HASH)"
+	#stellar contract update \
+	#	--id CC7KVTEWATMWTRZYWLXRMXDPVD6MIKDBROOJCYLGOHGEGFQBPFNBZ3ZI \
+	#	--source my-real-admin \
+	#	--rpc-url 'https://soroban-rpc.mainnet.stellar.gateway.fm' \
+	#	--network-passphrase 'Public Global Stellar Network ; September 2015' \
+	#	--new-code-hash $(NEW_HASH)
