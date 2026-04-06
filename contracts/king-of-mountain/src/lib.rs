@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Env, String, Address};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Env, String, Address, BytesN};
 use crate::StorageDataKey::{AdminAddress, KingMessage, LastKingAmount, TokenAddress};
 
 #[contracttype]
@@ -32,6 +32,30 @@ pub struct KingOfMountain;
 // <https://developers.stellar.org/docs/build/smart-contracts/overview>.
 #[contractimpl]
 impl KingOfMountain {
+    pub fn __constructor(env: Env, admin: Address, token_address: Address) {
+        env.storage().instance().set(&AdminAddress, &admin);
+        env.storage().instance().set(&TokenAddress, &token_address);
+    }
+
+    pub fn version() -> u32 {
+        1
+    }
+
+    /// Функция для обновления кода контракта
+    /// new_wasm_hash — это SHA-256 хеш нового Wasm-файла, уже загруженного в сеть
+    /// stellar contract upload --wasm path/to/new_contract.wasm --source-account admin --network testnet
+    /// stellar contract invoke --id <CONTRACT_ID> --source-account admin --network testnet -- upgrade --new_wasm_hash <NEW_WASM_HASH>
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        // 1. Получаем адрес администратора из хранилища
+        let admin: Address = env.storage().instance().get(&AdminAddress).unwrap();
+
+        // 2. Проверяем подпись администратора (обязательно!)
+        admin.require_auth();
+
+        // 3. Вызываем системную функцию для замены Wasm-кода по текущему адресу
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
     pub fn capture(env: Env, user: Address, token_address: Address, amount: i128, msg: String) -> bool {
         // Проверяем разрешен-ли текущий токен
         if !Self::is_token_enabled(env.clone(), &token_address) {
