@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Env, String, Address, BytesN};
-use crate::StorageDataKey::{AdminAddress, KingMessage, LastKingAmount, TokenAddress, Version};
+use crate::StorageDataKey::{AdminAddress, KingMessage, LastKingAmount, TokenAddress};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,7 +39,7 @@ impl KingOfMountain {
     }
 
     pub fn version() -> u32 {
-        2
+        4
     }
 
     /// Функция для обновления кода контракта
@@ -56,31 +56,6 @@ impl KingOfMountain {
 
         // 3. Вызываем системную функцию для замены Wasm-кода по текущему адресу
         env.deployer().update_current_contract_wasm(new_wasm_hash);
-
-        // 4. Вызываем метод миграции уже нового контракта
-        // С этого момента выполняется код НОВОГО WASM.
-        // Мы вызываем внутреннюю функцию нового контракта.
-        Self::migrate(env);
-    }
-
-    /// Функция для миграции данных при обновлении контракта. Вызывается внутри функции upgrade уже после замены кода.
-    pub fn migrate(env: Env) {
-        // 1. Получаем адрес администратора из хранилища
-        let admin: Address = env.storage().instance().get(&AdminAddress).unwrap();
-
-        // 2. Проверяем подпись администратора (обязательно!)
-        admin.require_auth();
-
-        // 3. Обновляем версию контракта в хранилище. Это позволит нам отслеживать, что контракт был успешно обновлен.
-        let old_version: u32 = env.storage().instance().get(&Version).unwrap_or(0);
-        env.storage().instance().set(&Version, &Self::version());
-
-        // 4. Обновляем данные контракта если нужно
-        if old_version != Self::version() {
-            // Здесь можно добавить логику для обновления данных контракта, например,
-            // перенос данных из старой версии в новую, если структура данных изменилась.
-            // В нашем случае структура данных не меняется, поэтому просто оставляем это место для примера.
-        }
     }
 
     /// Функция для захвата горы. Пользователь должен отправить определенное количество токенов, чтобы стать новым королем.

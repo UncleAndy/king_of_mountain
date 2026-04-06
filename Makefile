@@ -18,10 +18,24 @@ testnet-deploy: build
 testnet-withdraw:
 	stellar contract invoke \
 		--id CCQMOG2ZD7KJH2R52PRVSIBMZLX5XITB4EVUQSMGTZFKHTJUABN2H7TU \
-		--source-account deployer \
+		--source deployer \
 		--network testnet \
 		--\
 		 withdraw
+
+testnet-update: build
+	$(eval NEW_HASH := $(shell stellar contract install \
+		--wasm target/wasm32v1-none/release/king_of_mountain.wasm \
+		--source deployer \
+		--network testnet))
+	@echo "Новый хеш кода: $(NEW_HASH)"
+	stellar contract invoke \
+		--id CAO42C7JEVNEIFWBYDOHC6ERJXKOJMETK2T6HKRJWKJM6UFMXFDCM4OZ \
+		--source deployer \
+		--network testnet \
+		-- \
+		upgrade \
+		--new_wasm_hash $(NEW_HASH)
 
 mainnet-deploy: build
 	stellar contract deploy \
