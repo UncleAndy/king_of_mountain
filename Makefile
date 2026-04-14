@@ -54,12 +54,23 @@ mainnet-update:
 		--rpc-url 'https://soroban-rpc.mainnet.stellar.gateway.fm' \
 		--network-passphrase 'Public Global Stellar Network ; September 2015'))
 	@echo "Новый хеш кода: $(NEW_HASH)"
-	#stellar contract invoke \
-	#	--id CAFXUALXFPTBTLSRCDSMJXNPSN3AVL2ZPXJUDDHVTUTLRX5SCNP2SISM \
-	#	--source my-real-admin \
-	#	--rpc-url 'https://soroban-rpc.mainnet.stellar.gateway.fm' \
-	#	--network-passphrase 'Public Global Stellar Network ; September 2015' \
-	#	-- \
-	#	upgrade \
-	#	--new_wasm_hash $(NEW_HASH)
+	stellar contract invoke \
+		--id CAFXUALXFPTBTLSRCDSMJXNPSN3AVL2ZPXJUDDHVTUTLRX5SCNP2SISM \
+		--source my-real-admin \
+		--rpc-url 'https://soroban-rpc.mainnet.stellar.gateway.fm' \
+		--network-passphrase 'Public Global Stellar Network ; September 2015' \
+		-- \
+		upgrade \
+		--new_wasm_hash $(NEW_HASH)
 
+mainnet-capture:
+	stellar contract invoke \
+		--id CAFXUALXFPTBTLSRCDSMJXNPSN3AVL2ZPXJUDDHVTUTLRX5SCNP2SISM \
+		--source my-real-admin \
+		--rpc-url 'https://soroban-rpc.mainnet.stellar.gateway.fm' \
+		--network-passphrase 'Public Global Stellar Network ; September 2015' \
+		-- \
+		capture \
+		--user GD5JE7SLQL5FZIQMBJADLQ7S5RRV2T7OCJOVSQD43A6RNADLNMTLANDY \
+		--amount 1 \
+		--msg "Andy - SUPERSTAR!!!"

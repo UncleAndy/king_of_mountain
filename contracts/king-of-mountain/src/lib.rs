@@ -62,6 +62,15 @@ impl KingOfMountain {
     pub fn capture(env: Env, user: Address, amount: i128, msg: String) -> bool {
         user.require_auth();
 
+        if amount < 0 {
+            return false;
+        }
+
+        let (min, max) = KingOfMountain::get_range(env.clone());
+        if amount < min || amount > max {
+            return false;
+        };
+
         let token_address: Address = env.storage().instance()
             .get(&TokenAddress)
             .expect("Contract not initialized");
@@ -75,8 +84,7 @@ impl KingOfMountain {
 
         // Если больше - переводим токены от пользователя контракту
         let token_client = token::Client::new(&env, &token_address);
-        token_client.transfer_from(
-            &env.current_contract_address(), // Кто инициирует (spender)
+        token_client.transfer(
             &user,                           // У кого забираем (from)
             &env.current_contract_address(), // Кому отдаем (to)
             &amount                          // Сколько
@@ -94,6 +102,24 @@ impl KingOfMountain {
         env.storage().persistent().set(&key, &message);
 
         true
+    }
+
+    /// Получить диапазон сумм для захвата горы
+    pub fn get_range(env: Env) -> (i128, i128) {
+        let key = LastKingAmount;
+        let last_amount = env.storage().persistent().get(&key).unwrap_or(0);
+
+        if last_amount == 0 {
+            let min = 10000000i128;
+            let max = 15000000i128;
+
+            (min, max)
+        } else {
+            let min = last_amount * 110 / 100; // минимум 10% больше последнего захвата
+            let max = last_amount * 150 / 100; // максимум 50% больше последнего захвата
+
+            (min, max)
+        }
     }
 
     /// Получение сообщения короля
