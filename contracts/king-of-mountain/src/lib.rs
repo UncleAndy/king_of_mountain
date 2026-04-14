@@ -110,13 +110,13 @@ impl KingOfMountain {
         let last_amount = env.storage().persistent().get(&key).unwrap_or(0);
 
         if last_amount == 0 {
-            let min = 10000000i128;
-            let max = 15000000i128;
+            let min = 1i128;
+            let max = 100i128;
 
             (min, max)
         } else {
-            let min = last_amount * 110 / 100; // минимум 10% больше последнего захвата
-            let max = last_amount * 150 / 100; // максимум 50% больше последнего захвата
+            let min = last_amount + 1;
+            let max = last_amount * 2;
 
             (min, max)
         }
