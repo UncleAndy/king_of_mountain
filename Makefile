@@ -3,42 +3,41 @@ build:
 		stellar contract build
 
 testnet-deploy: build
-	bash scripts/ensure_testnet_key.sh
-	$(eval ADMIN := $(shell stellar keys address deployer))
-	$(eval TOKEN := $(shell stellar contract id asset --network testnet --asset native))
-	@echo "Admin: $(ADMIN)"
-	@echo "Token: $(TOKEN)"
+	@ADMIN=$$(bash scripts/ensure_testnet_key.sh); \
+	TOKEN=$$(stellar contract id asset --network testnet --asset native); \
+	echo "Admin: $$ADMIN"; \
+	echo "Token: $$TOKEN"; \
 	stellar contract deploy \
 		--wasm target/wasm32v1-none/release/king_of_mountain.wasm \
 		--source deployer \
 		--network testnet \
 		-- \
-		--admin $(ADMIN) \
-		--token_address $(TOKEN)
+		--admin $$ADMIN \
+		--token_address $$TOKEN
 
 testnet-withdraw:
-	bash scripts/ensure_testnet_key.sh
+	bash scripts/ensure_testnet_key.sh >/dev/null
 	stellar contract invoke \
 		--id CCQMOG2ZD7KJH2R52PRVSIBMZLX5XITB4EVUQSMGTZFKHTJUABN2H7TU \
 		--source deployer \
 		--network testnet \
-		--\
+		-- \
 		 withdraw
 
 testnet-update: build
-	bash scripts/ensure_testnet_key.sh
-	$(eval NEW_HASH := $(shell stellar contract install \
+	bash scripts/ensure_testnet_key.sh >/dev/null
+	@NEW_HASH=$$(stellar contract install \
 		--wasm target/wasm32v1-none/release/king_of_mountain.wasm \
 		--source deployer \
-		--network testnet))
-	@echo "Новый хеш кода: $(NEW_HASH)"
+		--network testnet); \
+	echo "Новый хеш кода: $$NEW_HASH"; \
 	stellar contract invoke \
 		--id CAO42C7JEVNEIFWBYDOHC6ERJXKOJMETK2T6HKRJWKJM6UFMXFDCM4OZ \
 		--source deployer \
 		--network testnet \
 		-- \
 		upgrade \
-		--new_wasm_hash $(NEW_HASH)
+		--new_wasm_hash $$NEW_HASH
 
 mainnet-deploy: build
 	stellar contract deploy \
