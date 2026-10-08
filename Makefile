@@ -3,6 +3,7 @@ build:
 		stellar contract build
 
 testnet-deploy: build
+	bash scripts/ensure_testnet_key.sh
 	$(eval ADMIN := $(shell stellar keys address deployer))
 	$(eval TOKEN := $(shell stellar contract id asset --network testnet --asset native))
 	@echo "Admin: $(ADMIN)"
@@ -16,6 +17,7 @@ testnet-deploy: build
 		--token_address $(TOKEN)
 
 testnet-withdraw:
+	bash scripts/ensure_testnet_key.sh
 	stellar contract invoke \
 		--id CCQMOG2ZD7KJH2R52PRVSIBMZLX5XITB4EVUQSMGTZFKHTJUABN2H7TU \
 		--source deployer \
@@ -24,6 +26,7 @@ testnet-withdraw:
 		 withdraw
 
 testnet-update: build
+	bash scripts/ensure_testnet_key.sh
 	$(eval NEW_HASH := $(shell stellar contract install \
 		--wasm target/wasm32v1-none/release/king_of_mountain.wasm \
 		--source deployer \
