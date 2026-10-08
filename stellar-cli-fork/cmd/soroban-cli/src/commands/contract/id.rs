@@ -1,0 +1,31 @@
+pub mod asset;
+pub mod wasm;
+
+#[derive(Debug, clap::Subcommand)]
+pub enum Cmd {
+    /// Derive the contract id for a builtin Stellar Asset Contract
+    Asset(asset::Cmd),
+
+    /// Derive the contract id for a Wasm contract
+    Wasm(wasm::Cmd),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error(transparent)]
+    Asset(#[from] asset::Error),
+
+    #[error(transparent)]
+    Wasm(#[from] wasm::Error),
+}
+
+impl Cmd {
+    pub fn run(&self) -> Result<(), Error> {
+        match &self {
+            Cmd::Asset(asset) => asset.run()?,
+            Cmd::Wasm(wasm) => wasm.run()?,
+        }
+
+        Ok(())
+    }
+}

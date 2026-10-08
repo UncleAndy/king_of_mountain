@@ -1,0 +1,13 @@
+#!/bin/sh
+
+set -ex
+
+cargo fmt --check || (cargo fmt && exit 1)
+
+git diff-index --quiet HEAD --
+
+cargo clippy --all -- -Dwarnings
+
+cargo build
+cargo test --all || (echo "might need to rebuild make build-snapshot" && exit 1)
+make docs

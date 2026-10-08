@@ -1,0 +1,235 @@
+pub mod alias;
+pub mod arg_parsing;
+pub mod asset;
+pub mod bindings;
+pub mod build;
+pub mod deploy;
+pub mod extend;
+pub mod fetch;
+pub mod id;
+pub mod info;
+pub mod init;
+pub mod inspect;
+pub mod invoke;
+pub mod optimize;
+pub mod read;
+pub mod restore;
+pub mod spec_verify;
+pub mod upload;
+
+use crate::{commands::global, print::Print, utils::deprecate_message};
+
+#[derive(Debug, clap::Subcommand)]
+pub enum Cmd {
+    /// Utilities to deploy a Stellar Asset Contract or get its id
+    #[command(subcommand)]
+    Asset(asset::Cmd),
+
+    /// Utilities to manage contract aliases
+    #[command(subcommand)]
+    Alias(alias::Cmd),
+
+    /// Generate code client bindings for a contract
+    #[command(subcommand)]
+    Bindings(bindings::Cmd),
+
+    Build(build::Cmd),
+
+    /// Extend the time to live ledger of a contract-data ledger entry.
+    ///
+    /// If no keys are specified the contract itself is extended.
+    Extend(extend::Cmd),
+
+    /// Deploy a wasm contract
+    Deploy(deploy::wasm::Cmd),
+
+    /// Fetch a contract's Wasm binary
+    Fetch(fetch::Cmd),
+
+    /// Generate the contract id for a given contract or asset
+    #[command(subcommand)]
+    Id(id::Cmd),
+
+    /// Access info about contracts
+    #[command(subcommand)]
+    Info(info::Cmd),
+
+    /// Initialize a Soroban contract project.
+    ///
+    /// This command will create a Cargo workspace project and add a sample Stellar contract.
+    /// The name of the contract can be specified by `--name`. It can be run multiple times
+    /// with different names in order to generate multiple contracts, and files won't
+    /// be overwritten unless `--overwrite` is passed.
+    Init(init::Cmd),
+
+    /// ⚠️ Deprecated, use `contract info`. Inspect a WASM file listing contract functions, meta, etc
+    #[command(display_order = 100)]
+    Inspect(inspect::Cmd),
+
+    /// Install a WASM file to the ledger without creating a contract instance
+    Upload(upload::Cmd),
+
+    /// ⚠️ Deprecated, use `contract upload`. Install a WASM file to the ledger without creating a contract instance
+    Install(upload::Cmd),
+
+    /// Invoke a contract function
+    ///
+    /// Generates an "implicit CLI" for the specified contract on-the-fly using the contract's
+    /// schema, which gets embedded into every Soroban contract. The "slop" in this command,
+    /// everything after the `--`, gets passed to this implicit CLI. Get in-depth help for a given
+    /// contract:
+    ///
+    ///     stellar contract invoke ... -- --help
+    Invoke(invoke::Cmd),
+
+    /// ⚠️ Deprecated, use `build --optimize`. Optimize a WASM file
+    Optimize(optimize::Cmd),
+
+    /// Print the current value of a contract-data ledger entry
+    Read(read::Cmd),
+
+    /// Restore an evicted value for a contract-data legder entry.
+    ///
+    /// If no keys are specificed the contract itself is restored.
+    Restore(restore::Cmd),
+
+    /// Verify that a contract spec references only defined types
+    // Hidden because it's unclear if this makes sense as a general subcommand
+    // to offer, but during the development of features relating to specs it has
+    // been helpful to have it as its own command. Verification is automatically
+    // run as part of `contract build` so for a general user this is not needed.
+    #[command(name = "spec-verify", hide = true)]
+    SpecVerify(spec_verify::Cmd),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error(transparent)]
+    Asset(#[from] asset::Error),
+
+    #[error(transparent)]
+    Alias(#[from] alias::Error),
+
+    #[error(transparent)]
+    Bindings(#[from] bindings::Error),
+
+    #[error(transparent)]
+    Build(#[from] build::Error),
+
+    #[error(transparent)]
+    Extend(#[from] extend::Error),
+
+    #[error(transparent)]
+    Deploy(#[from] deploy::wasm::Error),
+
+    #[error(transparent)]
+    Fetch(#[from] fetch::Error),
+
+    #[error(transparent)]
+    Init(#[from] init::Error),
+
+    #[error(transparent)]
+    Id(#[from] id::Error),
+
+    #[error(transparent)]
+    Info(#[from] info::Error),
+
+    #[error(transparent)]
+    Inspect(#[from] inspect::Error),
+
+    #[error(transparent)]
+    Install(#[from] upload::Error),
+
+    #[error(transparent)]
+    Invoke(#[from] invoke::Error),
+
+    #[error(transparent)]
+    Optimize(#[from] optimize::Error),
+
+    #[error(transparent)]
+    Read(#[from] read::Error),
+
+    #[error(transparent)]
+    Restore(#[from] restore::Error),
+
+    #[error(transparent)]
+    SpecVerify(#[from] spec_verify::Error),
+}
+
+impl Cmd {
+    pub async fn run(&self, global_args: &global::Args) -> Result<(), Error> {
+        let print = Print::new(global_args.quiet);
+
+        match &self {
+            Cmd::Asset(asset) => asset.run(global_args).await?,
+            Cmd::Bindings(bindings) => bindings.run().await?,
+            Cmd::Build(build) => {
+                build.run(global_args).await?;
+            }
+            Cmd::Extend(extend) => extend.run(global_args).await?,
+            Cmd::Alias(alias) => alias.run(global_args)?,
+            Cmd::Deploy(deploy) => deploy.run(global_args).await?,
+            Cmd::Id(id) => id.run()?,
+            Cmd::Info(info) => info.run(global_args).await?,
+            Cmd::Init(init) => init.run(global_args)?,
+            Cmd::Inspect(inspect) => {
+                deprecate_message(
+                    print,
+                    "stellar contract inspect",
+                    "Use `stellar contract info` instead.",
+                );
+                inspect.run()?;
+            }
+            Cmd::Install(install) => {
+                deprecate_message(
+                    print,
+                    "stellar contract install",
+                    "Use `stellar contract upload` instead.",
+                );
+                install.run(global_args).await?;
+            }
+            Cmd::Upload(upload) => upload.run(global_args).await?,
+            Cmd::Invoke(invoke) => invoke.run(global_args).await?,
+            Cmd::Optimize(optimize) => {
+                deprecate_message(
+                    print,
+                    "stellar contract optimize",
+                    "Use `stellar contract build --optimize` instead.",
+                );
+                optimize.run()?;
+            }
+            Cmd::Fetch(fetch) => fetch.run().await?,
+            Cmd::Read(read) => read.run().await?,
+            Cmd::Restore(restore) => restore.run(global_args).await?,
+            Cmd::SpecVerify(spec_verify) => spec_verify.run(global_args)?,
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, clap::ValueEnum)]
+pub enum Durability {
+    /// Persistent
+    Persistent,
+    /// Temporary
+    Temporary,
+}
+
+impl From<&Durability> for crate::xdr::ContractDataDurability {
+    fn from(d: &Durability) -> Self {
+        match d {
+            Durability::Persistent => crate::xdr::ContractDataDurability::Persistent,
+            Durability::Temporary => crate::xdr::ContractDataDurability::Temporary,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, clap::ValueEnum)]
+pub enum SpecOutput {
+    /// XDR of array of contract spec entries
+    XdrBase64,
+    /// Array of xdr of contract spec entries
+    XdrBase64Array,
+    /// Pretty print of contract spec entries
+    Docs,
+}

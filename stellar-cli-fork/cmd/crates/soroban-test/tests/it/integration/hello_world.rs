@@ -1,0 +1,581 @@
+use predicates::prelude::PredicateBooleanExt;
+use soroban_cli::{
+    commands::{
+        contract::{self, fetch},
+        txn_result::TxnResult,
+    },
+    config::{locator, secret},
+};
+use soroban_test::{AssertExt, TestEnv, LOCAL_NETWORK_PASSPHRASE};
+
+use super::util::{deploy_hello, extend};
+use crate::integration::util::extend_contract;
+
+#[allow(clippy::too_many_lines)]
+#[tokio::test]
+async fn invoke_view_with_non_existent_source_account() {
+    let sandbox = &TestEnv::new();
+    let id = deploy_hello(sandbox).await;
+    let world = "world";
+    let cmd = hello_world_cmd(&id, world);
+    let config = sandbox.clone_config("");
+    let res = cmd.execute(&config, false, false).await.unwrap();
+    assert_eq!(res, TxnResult::Res(format!(r#"["Hello",{world:?}]"#)));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn invoke_contract() {
+    let sandbox = &TestEnv::new();
+
+    sandbox
+        .new_assert_cmd("keys")
+        .arg("fund")
+        .arg("test")
+        .arg("--hd-path=1")
+        .assert()
+        .success();
+    let addr = sandbox
+        .new_assert_cmd("keys")
+        .arg("address")
+        .arg("test")
+        .assert()
+        .stdout_as_str();
+    let addr_1 = sandbox
+        .new_assert_cmd("keys")
+        .arg("address")
+        .arg("test")
+        .arg("--hd-path=1")
+        .assert()
+        .stdout_as_str();
+    println!("Addrs {addr}, {addr_1}");
+
+    let secret_key = sandbox
+        .new_assert_cmd("keys")
+        .arg("secret")
+        .arg("test")
+        .assert()
+        .stdout_as_str();
+    let public_key = sandbox
+        .new_assert_cmd("keys")
+        .arg("address")
+        .arg("test")
+        .assert()
+        .stdout_as_str();
+    let secret_key_1 = sandbox
+        .new_assert_cmd("keys")
+        .arg("secret")
+        .arg("test")
+        .arg("--hd-path=1")
+        .assert()
+        .stdout_as_str();
+    let dir = sandbox.config_dir();
+    let seed_phrase = std::fs::read_to_string(dir.join("identity/test.toml")).unwrap();
+    let s = toml::from_str::<secret::Secret>(&seed_phrase).unwrap();
+    let secret::Secret::SeedPhrase { seed_phrase, .. } = s else {
+        panic!("Expected seed phrase")
+    };
+
+    sandbox
+        .new_assert_cmd("cache")
+        .arg("clean")
+        .assert()
+        .success();
+
+    let id = &deploy_hello(sandbox).await;
+    extend_contract(sandbox, id).await;
+
+    let output = sandbox
+        .new_assert_cmd("cache")
+        .arg("actionlog")
+        .arg("ls")
+        .assert()
+        .stdout_as_str();
+    let lines = output.split('\n').collect::<Vec<&str>>();
+    let uid = lines.last().expect("uid should be present");
+    ulid::Ulid::from_string(&uid).expect(format!("invalid ulid: {uid:?}").as_str());
+
+    // Note that all functions tested here have no state
+    invoke_hello_world(sandbox, id);
+
+    invoke_hello_world_with_lib(sandbox, id).await;
+
+    let config_locator = locator::Args {
+        config_dir: Some(dir.to_path_buf()),
+    };
+
+    config_locator
+        .write_identity(
+            "testone",
+            &secret::Secret::SecretKey {
+                secret_key: secret_key_1.clone(),
+            },
+        )
+        .unwrap();
+
+    let sk_from_file = std::fs::read_to_string(dir.join("identity/testone.toml")).unwrap();
+
+    assert_eq!(sk_from_file, format!("secret_key = \"{secret_key_1}\"\n"));
+
+    let secret_key_1_readin = sandbox
+        .new_assert_cmd("keys")
+        .arg("secret")
+        .arg("testone")
+        .assert()
+        .stdout_as_str();
+
+    assert_eq!(secret_key_1, secret_key_1_readin);
+
+    // list all files recursively from dir including in hidden folders
+    for entry in walkdir::WalkDir::new(dir) {
+        println!("{}", entry.unwrap().path().display());
+    }
+    invoke_auth(sandbox, id, &addr);
+    invoke_auth_with_identity(sandbox, id, "test", &addr);
+    invoke_auth_with_identity(sandbox, id, "testone", &addr_1);
+    invoke_auth_with_non_source_identity(sandbox, id, "test", "testone", &addr_1);
+    invoke_auth_with_unknown_account_fail(sandbox, id).await;
+    contract_data_read_failure(sandbox, id);
+    invoke_with_seed(sandbox, id, &seed_phrase).await;
+    invoke_with_sk(sandbox, id, &secret_key).await;
+    invoke_with_pk(sandbox, id, &public_key).await;
+    // This does add an identity to local config
+    invoke_with_id(sandbox, id).await;
+    handles_kebab_case(sandbox, id).await;
+    fetch(sandbox, id).await;
+    invoke_prng_u64_in_range_test(sandbox, id).await;
+
+    invoke_log(sandbox, id);
+}
+
+pub(crate) fn invoke_hello_world(sandbox: &TestEnv, id: &str) {
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("invoke")
+        .arg("--is-view")
+        .arg("--id")
+        .arg(id)
+        .arg("--")
+        .arg("hello")
+        .arg("--world=world")
+        .assert()
+        .stdout("[\"Hello\",\"world\"]\n")
+        .success();
+}
+
+fn hello_world_cmd(id: &str, arg: &str) -> contract::invoke::Cmd {
+    contract::invoke::Cmd {
+        contract_id: id.parse().unwrap(),
+        slop: vec!["hello".into(), format!("--world={arg}").into()],
+        ..Default::default()
+    }
+}
+
+async fn invoke_hello_world_with_lib(e: &TestEnv, id: &str) {
+    let cmd = hello_world_cmd(id, "world");
+    let config = e.clone_config("test");
+    let res = cmd.execute(&config, false, false).await.unwrap();
+    assert_eq!(res, TxnResult::Res(r#"["Hello","world"]"#.to_string()));
+}
+
+fn invoke_auth(sandbox: &TestEnv, id: &str, addr: &str) {
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("invoke")
+        .arg("--id")
+        .arg(id)
+        .arg("--")
+        .arg("auth")
+        .arg("--addr=test")
+        .arg("--world=world")
+        .assert()
+        .stdout(format!("\"{addr}\"\n"))
+        .success();
+
+    // Invoke it again without providing the contract, to exercise the deployment
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("invoke")
+        .arg("--id")
+        .arg(id)
+        .arg("--")
+        .arg("auth")
+        .arg("--addr=test")
+        .arg("--world=world")
+        .assert()
+        .stdout(format!("\"{addr}\"\n"))
+        .success();
+}
+
+fn invoke_auth_with_identity(sandbox: &TestEnv, id: &str, key: &str, addr: &str) {
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("invoke")
+        .arg("--source")
+        .arg(key)
+        .arg("--id")
+        .arg(id)
+        .arg("--")
+        .arg("auth")
+        .arg("--addr")
+        .arg(key)
+        .arg("--world=world")
+        .assert()
+        .stdout(format!("\"{addr}\"\n"))
+        .success();
+}
+
+fn invoke_auth_with_non_source_identity(
+    sandbox: &TestEnv,
+    id: &str,
+    source: &str,
+    key: &str,
+    addr: &str,
+) {
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("invoke")
+        .arg("--source")
+        .arg(source)
+        .arg("--id")
+        .arg(id)
+        .arg("--")
+        .arg("auth")
+        .arg("--addr")
+        .arg(key)
+        .arg("--world=world")
+        .assert()
+        .stdout(format!("\"{addr}\"\n"))
+        .success();
+}
+
+// A public key that matches no stored identity has no signer, so requiring its
+// auth must fail rather than silently succeed. This guards the `CannotSign`
+// fallback in `resolve_secret`: signing by public key only works when the key
+// belongs to a known identity.
+async fn invoke_auth_with_unknown_account_fail(sandbox: &TestEnv, id: &str) {
+    // Mint a fresh keypair, capture its address, then remove the identity so the
+    // address is a valid, funded-elsewhere account that we hold no secret for.
+    sandbox
+        .new_assert_cmd("keys")
+        .arg("generate")
+        .arg("unknown")
+        .assert()
+        .success();
+    let addr = sandbox
+        .new_assert_cmd("keys")
+        .arg("address")
+        .arg("unknown")
+        .assert()
+        .stdout_as_str();
+    sandbox
+        .new_assert_cmd("keys")
+        .arg("rm")
+        .arg("--force")
+        .arg("unknown")
+        .assert()
+        .success();
+
+    let res = sandbox
+        .invoke_with_test(&[
+            "--id",
+            id,
+            "--",
+            "auth",
+            &format!("--addr={addr}"),
+            "--world=world",
+        ])
+        .await;
+    let e = res.unwrap_err();
+    assert!(
+        matches!(e, contract::invoke::Error::Config(_)),
+        "Expected config error got {e:?}"
+    );
+}
+
+fn contract_data_read_failure(sandbox: &TestEnv, id: &str) {
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("read")
+        .arg("--id")
+        .arg(id)
+        .arg("--key=COUNTER")
+        .arg("--durability=persistent")
+        .assert()
+        .failure()
+        .stderr(
+            "❌ error: no matching contract data entries were found for the specified contract id\n",
+        );
+}
+
+#[tokio::test]
+async fn contract_data_read() {
+    const KEY: &str = "COUNTER";
+    let sandbox = &TestEnv::new();
+    let id = &deploy_hello(sandbox).await;
+    let res = sandbox
+        .invoke_with_test(&["--id", id, "--", "inc"])
+        .await
+        .unwrap();
+    assert_eq!(res.trim(), "1");
+
+    extend(sandbox, id, Some(KEY)).await;
+
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("read")
+        .arg("--id")
+        .arg(id)
+        .arg("--key")
+        .arg(KEY)
+        .arg("--durability=persistent")
+        .assert()
+        .success()
+        .stdout(predicates::str::starts_with("COUNTER,1"));
+
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("invoke")
+        .arg("--id")
+        .arg(id)
+        .arg("--")
+        .arg("inc")
+        .assert()
+        .success();
+
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("read")
+        .arg("--id")
+        .arg(id)
+        .arg("--key")
+        .arg(KEY)
+        .arg("--durability=persistent")
+        .assert()
+        .success()
+        .stdout(predicates::str::starts_with("COUNTER,2"));
+
+    // ensure default durability = persistent works
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("read")
+        .arg("--id")
+        .arg(id)
+        .arg("--key")
+        .arg(KEY)
+        .assert()
+        .success()
+        .stdout(predicates::str::starts_with("COUNTER,2"));
+}
+
+#[tokio::test]
+async fn extend_nonexistent_entry_errors_without_panic() {
+    // A well-formed but non-existent contract id makes the extend a no-op. The
+    // CLI must surface a clean error rather than panic with "index out of
+    // bounds" while inspecting the (empty) ledger entries. See issue #2599.
+    const NONEXISTENT_ID: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+    let sandbox = &TestEnv::new();
+
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("extend")
+        .arg("--id")
+        .arg(NONEXISTENT_ID)
+        .arg("--ledgers-to-extend")
+        .arg("1")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Ledger entry not found"))
+        .stderr(predicates::str::contains("index out of bounds").not())
+        .stderr(predicates::str::contains("panicked").not());
+}
+
+#[tokio::test]
+async fn restore_nonexistent_entry_errors_without_panic() {
+    // Restoring a well-formed but non-existent contract id fails at
+    // simulation with "Missing entry to restore". The CLI must surface that
+    // as a clean error and never panic with "index out of bounds" while
+    // inspecting empty ledger entries. See issue #2599.
+    const NONEXISTENT_ID: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+    let sandbox = &TestEnv::new();
+
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("restore")
+        .arg("--id")
+        .arg(NONEXISTENT_ID)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Missing entry to restore"))
+        .stderr(predicates::str::contains("index out of bounds").not())
+        .stderr(predicates::str::contains("panicked").not());
+}
+
+async fn invoke_with_seed(sandbox: &TestEnv, id: &str, seed_phrase: &str) {
+    invoke_with_source(sandbox, seed_phrase, id).await;
+}
+
+async fn invoke_with_sk(sandbox: &TestEnv, id: &str, sk: &str) {
+    invoke_with_source(sandbox, sk, id).await;
+}
+
+async fn invoke_with_pk(sandbox: &TestEnv, id: &str, pk: &str) {
+    invoke_with_source(sandbox, pk, id).await;
+}
+
+async fn invoke_with_id(sandbox: &TestEnv, id: &str) {
+    invoke_with_source(sandbox, "test", id).await;
+}
+
+async fn invoke_with_source(sandbox: &TestEnv, source: &str, id: &str) {
+    let cmd = sandbox
+        .invoke_with(&["--id", id, "--", "hello", "--world=world"], source)
+        .await
+        .unwrap();
+    assert_eq!(cmd, "[\"Hello\",\"world\"]");
+}
+
+async fn handles_kebab_case(e: &TestEnv, id: &str) {
+    assert!(e
+        .invoke_with_test(&["--id", id, "--", "multi-word-cmd", "--contract-owner=world",])
+        .await
+        .is_ok());
+}
+
+async fn fetch(sandbox: &TestEnv, id: &str) {
+    let f = sandbox.dir().join("contract.wasm");
+    let cmd = sandbox.cmd_arr::<fetch::Cmd>(&[
+        "--rpc-url",
+        &sandbox.network.rpc_url,
+        "--network-passphrase",
+        LOCAL_NETWORK_PASSPHRASE,
+        "--id",
+        id,
+        "--out-file",
+        f.to_str().unwrap(),
+    ]);
+    cmd.run().await.unwrap();
+    assert!(f.exists());
+}
+
+async fn invoke_prng_u64_in_range_test(sandbox: &TestEnv, id: &str) {
+    assert!(sandbox
+        .invoke_with_test(&[
+            "--id",
+            id,
+            "--",
+            "prng_u64_in_range",
+            "--low=0",
+            "--high=100",
+        ])
+        .await
+        .is_ok());
+}
+
+fn invoke_log(sandbox: &TestEnv, id: &str) {
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("invoke")
+        .arg("--id")
+        .arg(id)
+        .arg("--")
+        .arg("log")
+        .arg("--str=world")
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            r#"Event: [{"symbol":"hello"},{"symbol":""}] = {"symbol":"world"}"#,
+        ))
+        .stderr(predicates::str::contains(
+            r#"Log: {"vec":[{"string":"hello {}"},{"symbol":"world"}]}"#,
+        ));
+}
+
+#[tokio::test]
+async fn invoke_auth_uses_hd_path_for_addr_alias() {
+    let sandbox = &TestEnv::new();
+
+    // Fund path 1 of the "test" seed (path 0 is funded by default)
+    sandbox
+        .new_assert_cmd("keys")
+        .arg("fund")
+        .arg("test")
+        .arg("--hd-path=1")
+        .assert()
+        .success();
+
+    let addr_1 = sandbox
+        .new_assert_cmd("keys")
+        .arg("address")
+        .arg("test")
+        .arg("--hd-path=1")
+        .assert()
+        .stdout_as_str();
+
+    let id = &deploy_hello(sandbox).await;
+    extend_contract(sandbox, id).await;
+
+    // --hd-path=1 must propagate to --addr alias resolution AND the auth signer.
+    // The contract's auth function returns the Address it was called with, so
+    // the output must be addr_1 (path 1), not path 0.
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("invoke")
+        .arg("--source")
+        .arg("test")
+        .arg("--hd-path=1")
+        .arg("--id")
+        .arg(id)
+        .arg("--")
+        .arg("auth")
+        .arg("--addr=test")
+        .arg("--world=world")
+        .assert()
+        .stdout(format!("\"{addr_1}\"\n"))
+        .success();
+}
+
+// Capping `--instructions` to 1 passes simulation (which budgets the real
+// instruction count) but fails on-chain with `ResourceLimitExceeded`, since the
+// override is applied to the assembled transaction after simulation. This is the
+// only reliable way to drive a transaction that fails *on-chain* rather than
+// during simulation, which is exactly the path that recovers and prints the
+// diagnostic events.
+#[tokio::test]
+async fn on_chain_failure_surfaces_diagnostic_events() {
+    let sandbox = &TestEnv::new();
+    let id = deploy_hello(sandbox).await;
+
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("invoke")
+        .arg("--id")
+        .arg(&id)
+        .arg("--instructions")
+        .arg("1")
+        .arg("--")
+        .arg("inc")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Error event"));
+}
+
+#[tokio::test]
+async fn on_chain_failure_diagnostic_events_suppressed_in_quiet_mode() {
+    let sandbox = &TestEnv::new();
+    let id = deploy_hello(sandbox).await;
+
+    sandbox
+        .new_assert_cmd("contract")
+        .arg("invoke")
+        .arg("--quiet")
+        .arg("--id")
+        .arg(&id)
+        .arg("--instructions")
+        .arg("1")
+        .arg("--")
+        .arg("inc")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Error event").not());
+}

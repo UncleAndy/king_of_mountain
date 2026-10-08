@@ -1,0 +1,16 @@
+target/
+captive-core/
+.soroban/
+snapshot.json
+!test.toml
+*.sqlite
+test_snapshots
+.vscode/settings.json
+.idea
+local.sh
+.stellar
+.zed
+node_modules/
+.DS_Store
+logs/
+ai-summary/

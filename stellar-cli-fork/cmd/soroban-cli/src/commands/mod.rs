@@ -1,0 +1,310 @@
+use std::str::FromStr;
+
+use clap::{error::ErrorKind, CommandFactory, FromArgMatches, Parser};
+
+use crate::config;
+
+pub mod cache;
+pub mod cfg;
+pub mod completion;
+pub mod container;
+pub mod contract;
+pub mod doctor;
+pub mod env;
+pub mod events;
+pub mod fee_stats;
+pub mod fees;
+pub mod global;
+pub mod keys;
+pub mod ledger;
+pub mod message;
+pub mod network;
+pub mod plugin;
+pub mod skill;
+pub mod snapshot;
+pub mod strkey;
+pub mod token;
+pub mod tx;
+pub mod version;
+
+pub mod txn_result;
+
+pub const HEADING_RPC: &str = "RPC Options";
+pub const HEADING_ARCHIVE: &str = "Archive Options";
+pub const HEADING_GLOBAL: &str = "Global Options";
+pub const HEADING_SIGNING: &str = "Signing Options";
+pub const HEADING_TRANSACTION: &str = "Transaction Options";
+pub const HEADING_CONTAINER: &str = "Container Options";
+const ABOUT: &str =
+    "Work seamlessly with Stellar accounts, contracts, and assets from the command line.
+
+- Generate and manage keys and accounts
+- Build, deploy, and interact with contracts
+- Deploy asset contracts
+- Stream events
+- Start local testnets
+- Decode, encode XDR
+- More!
+
+For additional information see:
+
+- Stellar Docs: https://developers.stellar.org
+- Smart Contract Docs: https://developers.stellar.org/docs/build/smart-contracts/overview
+- CLI Docs: https://developers.stellar.org/docs/tools/developer-tools/cli/stellar-cli";
+
+// long_about is shown when someone uses `--help`; short help when using `-h`
+const LONG_ABOUT: &str = "
+
+To get started generate a new identity:
+
+    stellar keys generate alice
+
+Use keys with the `--source` flag in other commands.
+
+Commands that work with contracts are organized under the `contract` subcommand. List them:
+
+    stellar contract --help
+
+Use contracts like a CLI:
+
+    stellar contract invoke --contract-id CCR6QKTWZQYW6YUJ7UP7XXZRLWQPFRV6SWBLQS4ZQOSAF4BOUD77OTE2 --source alice --network testnet -- --help
+
+Anything after the `--` double dash (the \"slop\") is parsed as arguments to the contract-specific CLI, generated on-the-fly from the contract schema. For the hello world example, with a function called `hello` that takes one string argument `to`, here's how you invoke it:
+
+    stellar contract invoke --contract-id CCR6QKTWZQYW6YUJ7UP7XXZRLWQPFRV6SWBLQS4ZQOSAF4BOUD77OTE2 --source alice --network testnet -- hello --to world
+";
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "stellar",
+    about = ABOUT,
+    version = version::long(),
+    long_about = ABOUT.to_string() + LONG_ABOUT,
+    disable_help_subcommand = true,
+)]
+pub struct Root {
+    #[clap(flatten)]
+    pub global_args: global::Args,
+
+    #[command(subcommand)]
+    pub cmd: Cmd,
+}
+
+impl Root {
+    pub fn new() -> Result<Self, Error> {
+        Self::try_parse().map_err(|e| match e.kind() {
+            ErrorKind::InvalidSubcommand => match plugin::default::run() {
+                Ok(()) => Error::Clap(e),
+                Err(e) => Error::PluginDefault(e),
+            },
+            _ => Error::Clap(e),
+        })
+    }
+
+    pub fn from_arg_matches<I, T>(itr: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        Self::from_arg_matches_mut(&mut Self::command().get_matches_from(itr))
+    }
+
+    pub async fn run(&mut self) -> Result<(), Error> {
+        match &mut self.cmd {
+            Cmd::Completion(completion) => completion.run(),
+            Cmd::Plugin(plugin) => plugin.run(&self.global_args).await?,
+            Cmd::Contract(contract) => contract.run(&self.global_args).await?,
+            Cmd::Doctor(doctor) => doctor.run(&self.global_args).await?,
+            Cmd::Config(config) => config.run()?,
+            Cmd::Events(events) => events.run().await?,
+            Cmd::Xdr(xdr) => xdr.run()?,
+            Cmd::Strkey(strkey) => strkey.run(&self.global_args)?,
+            Cmd::Network(network) => network.run(&self.global_args).await?,
+            Cmd::Container(container) => container.run(&self.global_args).await?,
+            Cmd::Snapshot(snapshot) => snapshot.run(&self.global_args).await?,
+            Cmd::Version(version) => version.run(),
+            Cmd::Skill(skill) => skill.run(),
+            Cmd::Keys(id) => id.run(&self.global_args).await?,
+            Cmd::Token(token) => token.run(&self.global_args).await?,
+            Cmd::Tx(tx) => tx.run(&self.global_args).await?,
+            Cmd::Ledger(ledger) => ledger.run(&self.global_args).await?,
+            Cmd::Message(message) => message.run(&self.global_args).await?,
+            Cmd::Cache(cache) => cache.run()?,
+            Cmd::Env(env) => env.run(&self.global_args)?,
+            Cmd::Fees(env) => env.run(&self.global_args).await?,
+            Cmd::FeeStats(env) => env.run(&self.global_args).await?,
+        }
+        Ok(())
+    }
+}
+
+impl FromStr for Root {
+    type Err = clap::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_arg_matches(s.split_whitespace())
+    }
+}
+
+#[derive(Parser, Debug)]
+pub enum Cmd {
+    /// Tools for smart contract developers
+    #[command(subcommand)]
+    Contract(contract::Cmd),
+
+    /// Diagnose and troubleshoot CLI and network issues
+    Doctor(doctor::Cmd),
+
+    /// Watch the network for contract events
+    Events(events::Cmd),
+
+    /// Prints the environment variables
+    ///
+    /// Prints to stdout in a format that can be used as .env file. Environment
+    /// variables have precedence over defaults.
+    ///
+    /// By default, secret values are concealed. To display them, use `--reveal`.
+    ///
+    /// Pass a name to get the value of a single environment variable. Its value is printed without
+    /// shell quoting (control characters are neutralized), suitable for command substitution.
+    /// Concealed variables print nothing unless `--reveal` is passed.
+    ///
+    /// If there are no environment variables in use, prints the defaults.
+    Env(env::Cmd),
+
+    /// Create and manage identities including keys and addresses
+    #[command(subcommand)]
+    Keys(keys::Cmd),
+
+    /// Configure connection to networks
+    #[command(subcommand)]
+    Network(network::Cmd),
+
+    /// Start local networks in containers
+    #[command(subcommand)]
+    Container(container::Cmd),
+
+    /// Manage CLI configuration
+    #[command(subcommand)]
+    Config(cfg::Cmd),
+
+    /// Download a snapshot of a ledger from an archive.
+    #[command(subcommand)]
+    Snapshot(snapshot::Cmd),
+
+    /// Interact with SEP-41 tokens and Stellar Asset Contracts
+    #[command(subcommand)]
+    Token(token::Cmd),
+
+    /// Sign, Simulate, and Send transactions
+    #[command(subcommand)]
+    Tx(tx::Cmd),
+
+    /// Decode and encode XDR
+    Xdr(stellar_xdr::cli::Root),
+
+    /// Decode and encode strkey
+    #[command(subcommand)]
+    Strkey(strkey::Cmd),
+
+    /// Print shell completion code for the specified shell.
+    #[command(long_about = completion::LONG_ABOUT)]
+    Completion(completion::Cmd),
+
+    /// Cache for transactions and contract specs
+    #[command(subcommand)]
+    Cache(cache::Cmd),
+
+    /// Print version information
+    Version(version::Cmd),
+
+    /// Print an AI-agent skill guide for using the Stellar CLI
+    #[command(long_about = skill::LONG_ABOUT)]
+    Skill(skill::Cmd),
+
+    /// The subcommand for CLI plugins
+    #[command(subcommand)]
+    Plugin(plugin::Cmd),
+
+    /// Fetch ledger information
+    #[command(subcommand)]
+    Ledger(ledger::Cmd),
+
+    /// Sign and verify arbitrary messages using SEP-53
+    #[command(subcommand)]
+    Message(message::Cmd),
+
+    /// ⚠️ Deprecated, use `fees stats` instead. Fetch network feestats
+    FeeStats(fee_stats::Cmd),
+
+    /// Fetch network feestats and configure CLI fee settings
+    #[command(subcommand)]
+    Fees(fees::Cmd),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    // TODO: stop using Debug for displaying errors
+    #[error(transparent)]
+    Contract(#[from] contract::Error),
+
+    #[error(transparent)]
+    Doctor(#[from] doctor::Error),
+
+    #[error(transparent)]
+    Events(#[from] events::Error),
+
+    #[error(transparent)]
+    Keys(#[from] keys::Error),
+
+    #[error(transparent)]
+    Xdr(#[from] stellar_xdr::cli::Error),
+
+    #[error(transparent)]
+    Strkey(#[from] stellar_strkey::cli::Error),
+
+    #[error(transparent)]
+    Clap(#[from] clap::error::Error),
+
+    #[error(transparent)]
+    Plugin(#[from] plugin::Error),
+
+    #[error(transparent)]
+    PluginDefault(#[from] plugin::default::Error),
+
+    #[error(transparent)]
+    Network(#[from] network::Error),
+
+    #[error(transparent)]
+    Container(#[from] container::Error),
+
+    #[error(transparent)]
+    Config(#[from] cfg::Error),
+
+    #[error(transparent)]
+    Snapshot(#[from] snapshot::Error),
+
+    #[error(transparent)]
+    Token(#[from] token::Error),
+
+    #[error(transparent)]
+    Tx(#[from] tx::Error),
+
+    #[error(transparent)]
+    Cache(#[from] cache::Error),
+
+    #[error(transparent)]
+    Env(#[from] env::Error),
+
+    #[error(transparent)]
+    Ledger(#[from] ledger::Error),
+
+    #[error(transparent)]
+    Message(#[from] message::Error),
+
+    #[error(transparent)]
+    FeeStats(#[from] fee_stats::Error),
+
+    #[error(transparent)]
+    Fees(#[from] fees::Error),
+}

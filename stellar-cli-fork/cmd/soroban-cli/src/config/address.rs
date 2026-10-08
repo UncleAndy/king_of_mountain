@@ -1,0 +1,373 @@
+use std::{
+    fmt::{self, Display, Formatter},
+    str::FromStr,
+};
+
+use crate::{signer, xdr};
+
+use super::{key, locator, secret, utils};
+
+/// Address can be either a public key or eventually an alias of a address.
+#[derive(Clone, Debug)]
+pub enum UnresolvedMuxedAccount {
+    Resolved(xdr::MuxedAccount),
+    AliasOrSecret(String),
+}
+
+impl Default for UnresolvedMuxedAccount {
+    fn default() -> Self {
+        UnresolvedMuxedAccount::AliasOrSecret(String::default())
+    }
+}
+
+impl Display for UnresolvedMuxedAccount {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            UnresolvedMuxedAccount::Resolved(muxed_account) => write!(f, "{muxed_account}"),
+            UnresolvedMuxedAccount::AliasOrSecret(alias_or_secret) => {
+                write!(f, "{alias_or_secret}")
+            }
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error(transparent)]
+    Locator(#[from] locator::Error),
+    #[error(transparent)]
+    Secret(#[from] secret::Error),
+    #[error(transparent)]
+    Signer(#[from] signer::Error),
+    #[error(transparent)]
+    Key(#[from] key::Error),
+    #[error("Address cannot be used to sign {0}")]
+    CannotSign(xdr::MuxedAccount),
+    #[error("Invalid key name: {0}\n only alphanumeric characters, underscores (_), and hyphens (-) are allowed.")]
+    InvalidKeyNameCharacters(String),
+    #[error("Invalid key name: {0}\n keys cannot exceed 250 characters")]
+    InvalidKeyNameLength(String),
+    #[error(transparent)]
+    Name(#[from] utils::Error),
+}
+
+impl FromStr for UnresolvedMuxedAccount {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(xdr::MuxedAccount::from_str(value).map_or_else(
+            |_| UnresolvedMuxedAccount::AliasOrSecret(value.to_string()),
+            UnresolvedMuxedAccount::Resolved,
+        ))
+    }
+}
+
+impl UnresolvedMuxedAccount {
+    pub fn resolve_muxed_account(
+        &self,
+        locator: &locator::Args,
+        hd_path: Option<u32>,
+    ) -> Result<xdr::MuxedAccount, Error> {
+        match self {
+            UnresolvedMuxedAccount::Resolved(muxed_account) => Ok(muxed_account.clone()),
+            UnresolvedMuxedAccount::AliasOrSecret(alias_or_secret) => Ok(locator
+                .read_key_with_secure_store_cache(alias_or_secret, hd_path)?
+                .muxed_account(hd_path)?),
+        }
+    }
+
+    pub fn resolve_secret(
+        &self,
+        locator: &locator::Args,
+        hd_path: Option<u32>,
+    ) -> Result<secret::Secret, Error> {
+        match &self {
+            // A literal public key has no secret on its own, but a stored
+            // identity may hold the matching key. Scan identities by public key
+            // so `G...` signs like its alias would; fall back to `CannotSign`
+            // when nothing matches. Muxed accounts (`M...`) aren't signable
+            // end-to-end yet (see the `todo!` in `sign_soroban_authorizations`),
+            // so they keep returning `CannotSign`.
+            UnresolvedMuxedAccount::Resolved(muxed_account) => {
+                let xdr::MuxedAccount::Ed25519(xdr::Uint256(key)) = muxed_account else {
+                    return Err(Error::CannotSign(muxed_account.clone()));
+                };
+                let target = stellar_strkey::ed25519::PublicKey(*key);
+                locator
+                    .secret_by_public_key(&target, hd_path)?
+                    .ok_or_else(|| Error::CannotSign(muxed_account.clone()))
+            }
+            UnresolvedMuxedAccount::AliasOrSecret(alias_or_secret) => {
+                Ok(locator.read_key(alias_or_secret)?.try_into()?)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct KeyName(pub String);
+
+impl std::ops::Deref for KeyName {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for KeyName {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        utils::validate_name(s).map_err(|e| match e {
+            utils::Error::InvalidNameLength(s) => Error::InvalidKeyNameLength(s),
+            utils::Error::InvalidNameCharacters(s) => Error::InvalidKeyNameCharacters(s),
+        })?;
+        Ok(KeyName(s.to_string()))
+    }
+}
+
+impl Display for KeyName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+pub fn validate_name(s: &str) -> Result<(), Error> {
+    Ok(utils::validate_name(s)?)
+}
+
+#[derive(Clone, Debug)]
+pub struct NetworkName(String);
+
+impl std::ops::Deref for NetworkName {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for NetworkName {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        validate_name(s)?;
+        Ok(NetworkName(s.to_string()))
+    }
+}
+
+impl Display for NetworkName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AliasName(String);
+
+impl std::ops::Deref for AliasName {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for AliasName {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        validate_name(s)?;
+        Ok(AliasName(s.to_string()))
+    }
+}
+
+impl Display for AliasName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ContractName(String);
+
+impl std::ops::Deref for ContractName {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for ContractName {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        validate_name(s)?;
+        Ok(ContractName(s.to_string()))
+    }
+}
+
+impl Display for ContractName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<std::path::Path> for ContractName {
+    fn as_ref(&self) -> &std::path::Path {
+        std::path::Path::new(&self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::secret::Secret;
+
+    const TEST_PUBLIC_KEY: &str = "GAREAZZQWHOCBJS236KIE3AWYBVFLSBK7E5UW3ICI3TCRWQKT5LNLCEZ";
+    const TEST_SECRET_KEY: &str = "SBF5HLRREHMS36XZNTUSKZ6FTXDZGNXOHF4EXKUL5UCWZLPBX3NGJ4BH";
+    const OTHER_PUBLIC_KEY: &str = "GAKSH6AD2IPJQELTHIOWDAPYX74YELUOWJLI2L4RIPIPZH6YQIFNUSDC";
+
+    fn locator_with_identity() -> (tempfile::TempDir, locator::Args) {
+        let dir = tempfile::tempdir().unwrap();
+        let locator = locator::Args {
+            config_dir: Some(dir.path().to_path_buf()),
+        };
+        let secret = Secret::SecretKey {
+            secret_key: TEST_SECRET_KEY.to_string(),
+        };
+        locator.write_identity("alice", &secret).unwrap();
+        (dir, locator)
+    }
+
+    #[test]
+    fn resolve_secret_matches_public_key_to_stored_identity() {
+        let (_dir, locator) = locator_with_identity();
+        let account: UnresolvedMuxedAccount = TEST_PUBLIC_KEY.parse().unwrap();
+        assert!(matches!(account, UnresolvedMuxedAccount::Resolved(_)));
+
+        let secret = account.resolve_secret(&locator, None).unwrap();
+        assert!(matches!(
+            secret,
+            Secret::SecretKey { ref secret_key } if secret_key == TEST_SECRET_KEY
+        ));
+    }
+
+    #[test]
+    fn resolve_secret_errors_when_public_key_has_no_stored_identity() {
+        let (_dir, locator) = locator_with_identity();
+        let account: UnresolvedMuxedAccount = OTHER_PUBLIC_KEY.parse().unwrap();
+
+        assert!(matches!(
+            account.resolve_secret(&locator, None).unwrap_err(),
+            Error::CannotSign(_)
+        ));
+    }
+
+    #[test]
+    fn resolve_secret_rejects_muxed_account_even_with_stored_identity() {
+        let (_dir, locator) = locator_with_identity();
+        // A muxed account (`M...`) wrapping alice's ed25519 key. Even though the
+        // underlying key belongs to a stored identity, muxed accounts aren't
+        // signable end-to-end yet, so resolution must still return `CannotSign`
+        // rather than the stored secret.
+        let pk = stellar_strkey::ed25519::PublicKey::from_string(TEST_PUBLIC_KEY).unwrap();
+        let account = UnresolvedMuxedAccount::Resolved(xdr::MuxedAccount::MuxedEd25519(
+            xdr::MuxedAccountMed25519 {
+                id: 1,
+                ed25519: xdr::Uint256(pk.0),
+            },
+        ));
+
+        assert!(matches!(
+            account.resolve_secret(&locator, None).unwrap_err(),
+            Error::CannotSign(_)
+        ));
+    }
+
+    #[test]
+    fn ledger_shorthand_is_not_recognized() {
+        match "ledger".parse::<UnresolvedMuxedAccount>().unwrap() {
+            UnresolvedMuxedAccount::AliasOrSecret(s) => assert_eq!(s, "ledger"),
+            UnresolvedMuxedAccount::Resolved(m) => panic!("unexpected resolved muxed: {m}"),
+        }
+    }
+
+    #[test]
+    fn ledger_indexed_shorthand_is_not_recognized() {
+        match "ledger:5".parse::<UnresolvedMuxedAccount>().unwrap() {
+            UnresolvedMuxedAccount::AliasOrSecret(s) => assert_eq!(s, "ledger:5"),
+            UnresolvedMuxedAccount::Resolved(m) => panic!("unexpected resolved muxed: {m}"),
+        }
+    }
+
+    #[test]
+    fn network_name_valid() {
+        assert!("my-network".parse::<NetworkName>().is_ok());
+        assert!("my_network_123".parse::<NetworkName>().is_ok());
+        assert!("ledger".parse::<NetworkName>().is_ok());
+    }
+
+    #[test]
+    fn network_name_rejects_path_traversal() {
+        assert!("../evil".parse::<NetworkName>().is_err());
+        assert!("../../etc/passwd".parse::<NetworkName>().is_err());
+        assert!("foo/bar".parse::<NetworkName>().is_err());
+        assert!("foo\\bar".parse::<NetworkName>().is_err());
+    }
+
+    #[test]
+    fn network_name_rejects_too_long() {
+        assert!("a".repeat(251).parse::<NetworkName>().is_err());
+        assert!("a".repeat(250).parse::<NetworkName>().is_ok());
+    }
+
+    #[test]
+    fn alias_name_valid() {
+        assert!("my_alias_123".parse::<AliasName>().is_ok());
+        assert!("ledger".parse::<AliasName>().is_ok());
+    }
+
+    #[test]
+    fn alias_name_rejects_path_traversal() {
+        assert!("../evil".parse::<AliasName>().is_err());
+        assert!("../../etc/passwd".parse::<AliasName>().is_err());
+        assert!("foo/bar".parse::<AliasName>().is_err());
+        assert!("foo\\bar".parse::<AliasName>().is_err());
+    }
+
+    #[test]
+    fn alias_name_rejects_too_long() {
+        assert!("a".repeat(251).parse::<AliasName>().is_err());
+        assert!("a".repeat(250).parse::<AliasName>().is_ok());
+    }
+
+    #[test]
+    fn network_name_rejects_empty() {
+        assert!("".parse::<NetworkName>().is_err());
+    }
+
+    #[test]
+    fn alias_name_rejects_empty() {
+        assert!("".parse::<AliasName>().is_err());
+    }
+
+    #[test]
+    fn contract_name_valid() {
+        assert!("hello-world".parse::<ContractName>().is_ok());
+        assert!("my_contract_123".parse::<ContractName>().is_ok());
+    }
+
+    #[test]
+    fn contract_name_rejects_path_traversal() {
+        assert!("../evil".parse::<ContractName>().is_err());
+        assert!("../../etc/passwd".parse::<ContractName>().is_err());
+        assert!("foo/bar".parse::<ContractName>().is_err());
+        assert!("foo\\bar".parse::<ContractName>().is_err());
+    }
+
+    #[test]
+    fn contract_name_rejects_too_long() {
+        assert!("a".repeat(251).parse::<ContractName>().is_err());
+        assert!("a".repeat(250).parse::<ContractName>().is_ok());
+    }
+
+    #[test]
+    fn contract_name_rejects_empty() {
+        assert!("".parse::<ContractName>().is_err());
+    }
+}

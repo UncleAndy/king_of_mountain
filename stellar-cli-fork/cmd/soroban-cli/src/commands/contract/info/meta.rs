@@ -1,0 +1,86 @@
+use std::fmt::Debug;
+use std::fmt::Write;
+
+use crate::commands::contract::info::meta::Error::{NoMetaPresent, NoSACMeta};
+use crate::commands::contract::info::shared::{self, fetch, Fetched, MetasInfoOutput};
+use crate::commands::global;
+use crate::print::Print;
+use clap::Parser;
+use soroban_spec_tools::contract;
+use soroban_spec_tools::contract::Spec;
+use soroban_spec_tools::sanitize;
+use stellar_xdr::{ScMetaEntry, ScMetaV0};
+
+#[derive(Parser, Debug, Clone)]
+pub struct Cmd {
+    #[command(flatten)]
+    pub common: shared::Args,
+    /// Format of the output
+    #[arg(long, default_value = "text")]
+    pub output: MetasInfoOutput,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error(transparent)]
+    Wasm(#[from] shared::Error),
+    #[error(transparent)]
+    Spec(#[from] contract::Error),
+    #[error("Stellar asset contract doesn't contain meta information")]
+    NoSACMeta(),
+    #[error("no meta present in provided WASM file")]
+    NoMetaPresent(),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
+
+impl Cmd {
+    pub async fn run(&self, global_args: &global::Args) -> Result<(), Error> {
+        let print = Print::new(global_args.quiet);
+        let Fetched { contract, .. } = fetch(&self.common, &print).await?;
+
+        let spec = match contract {
+            shared::Contract::Wasm { wasm_bytes } => Spec::new(&wasm_bytes)?,
+            shared::Contract::StellarAssetContract => return Err(NoSACMeta()),
+        };
+
+        let Some(meta_base64) = spec.meta_base64 else {
+            return Err(NoMetaPresent());
+        };
+
+        let res = match self.output {
+            MetasInfoOutput::XdrBase64 => meta_base64,
+            MetasInfoOutput::Json => serde_json::to_string(&spec.meta)?,
+            MetasInfoOutput::JsonFormatted => serde_json::to_string_pretty(&spec.meta)?,
+            MetasInfoOutput::Text => {
+                let mut meta_str = "Contract meta:\n".to_string();
+
+                for meta_entry in &spec.meta {
+                    match meta_entry {
+                        ScMetaEntry::ScMetaV0(ScMetaV0 { key, val }) => {
+                            let key = sanitize(&key.to_utf8_string_lossy());
+                            let val = match key.as_str() {
+                                "rsver" => format!(
+                                    "{} (Rust version)",
+                                    sanitize(&val.to_utf8_string_lossy())
+                                ),
+                                "rssdkver" => format!(
+                                    "{} (Soroban SDK version and its commit hash)",
+                                    sanitize(&val.to_utf8_string_lossy())
+                                ),
+                                _ => sanitize(&val.to_utf8_string_lossy()),
+                            };
+                            let _ = writeln!(meta_str, " • {key}: {val}");
+                        }
+                    }
+                }
+
+                meta_str
+            }
+        };
+
+        println!("{res}");
+
+        Ok(())
+    }
+}

@@ -1,0 +1,299 @@
+use crate::rpc::{GetTransactionResponse, GetTransactionResponseRaw, SimulateTransactionResponse};
+use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+use url::Url;
+
+use crate::utils::url::redact_url;
+use crate::utils::XDR_DEPTH_LIMIT;
+use crate::xdr::{self, WriteXdr};
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("Failed to find project directories")]
+    FailedToFindProjectDirs,
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    SerdeJson(#[from] serde_json::Error),
+    #[error(transparent)]
+    InvalidUrl(#[from] url::ParseError),
+    #[error(transparent)]
+    Ulid(#[from] ulid::DecodeError),
+    #[error(transparent)]
+    Xdr(#[from] xdr::Error),
+}
+
+pub fn project_dir() -> Result<directories::ProjectDirs, Error> {
+    let dir = if let Ok(data_home) = std::env::var("STELLAR_DATA_HOME") {
+        ProjectDirs::from_path(std::path::PathBuf::from(data_home))
+    } else if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
+        ProjectDirs::from_path(std::path::PathBuf::from(data_home).join("stellar-cli"))
+    } else {
+        ProjectDirs::from("org", "stellar", "stellar-cli")
+    };
+
+    dir.ok_or(Error::FailedToFindProjectDirs)
+}
+
+#[allow(clippy::module_name_repetitions)]
+pub fn data_local_dir() -> Result<std::path::PathBuf, Error> {
+    Ok(project_dir()?.data_local_dir().to_path_buf())
+}
+
+pub fn actions_dir() -> Result<std::path::PathBuf, Error> {
+    let dir = data_local_dir()?.join("actions");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+pub fn spec_dir() -> Result<std::path::PathBuf, Error> {
+    let dir = data_local_dir()?.join("spec");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+pub fn bucket_dir() -> Result<std::path::PathBuf, Error> {
+    let dir = data_local_dir()?.join("bucket");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+pub fn write(action: Action, rpc_url: &Url) -> Result<ulid::Ulid, Error> {
+    let data = Data {
+        action,
+        rpc_url: redact_url(rpc_url.as_str()),
+    };
+    let id = ulid::Ulid::new();
+    let file = actions_dir()?.join(id.to_string()).with_extension("json");
+    crate::config::locator::write_hardened_file(&file, serde_json::to_string(&data)?.as_bytes())?;
+    Ok(id)
+}
+
+pub fn read(id: &ulid::Ulid) -> Result<(Action, Url), Error> {
+    let file = actions_dir()?.join(id.to_string()).with_extension("json");
+    let data: Data = serde_json::from_str(&std::fs::read_to_string(file)?)?;
+    Ok((data.action, Url::from_str(&data.rpc_url)?))
+}
+
+pub fn write_spec(hash: &str, spec_entries: &[xdr::ScSpecEntry]) -> Result<(), Error> {
+    let file = spec_dir()?.join(hash);
+    tracing::trace!("writing spec to {:?}", file);
+    let mut contents: Vec<u8> = Vec::new();
+    for entry in spec_entries {
+        contents.extend(entry.to_xdr(xdr::Limits::depth(XDR_DEPTH_LIMIT))?);
+    }
+    crate::config::locator::write_hardened_file(&file, &contents)?;
+    Ok(())
+}
+
+pub fn read_spec(hash: &str) -> Result<Vec<xdr::ScSpecEntry>, Error> {
+    let file = spec_dir()?.join(hash);
+    tracing::trace!("reading spec from {:?}", file);
+    Ok(soroban_spec::read::parse_raw(&std::fs::read(file)?)?)
+}
+
+pub fn list_ulids() -> Result<Vec<ulid::Ulid>, Error> {
+    let dir = actions_dir()?;
+    let mut list = std::fs::read_dir(dir)?
+        .map(|entry| {
+            entry
+                .map(|e| e.file_name().into_string().unwrap())
+                .map_err(Error::from)
+        })
+        .collect::<Result<Vec<String>, Error>>()?;
+    list.sort();
+    Ok(list
+        .iter()
+        .map(|s| ulid::Ulid::from_str(s.trim_end_matches(".json")))
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+pub fn list_actions() -> Result<Vec<DatedAction>, Error> {
+    list_ulids()?
+        .into_iter()
+        .rev()
+        .map(|id| {
+            let (action, uri) = read(&id)?;
+            Ok(DatedAction(id, action, uri))
+        })
+        .collect::<Result<Vec<_>, Error>>()
+}
+
+pub struct DatedAction(ulid::Ulid, Action, Url);
+
+impl std::fmt::Display for DatedAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (id, a, uri) = (&self.0, &self.1, &self.2);
+        let datetime = to_datatime(id).format("%b %d %H:%M");
+        let status = match a {
+            Action::Simulate { response } => response
+                .error
+                .as_ref()
+                .map_or_else(|| "SUCCESS".to_string(), |_| "ERROR".to_string()),
+            Action::Send { response } => response.status.clone(),
+        };
+        write!(
+            f,
+            "{id} {} {status} {datetime} {} ",
+            a.type_str(),
+            redact_url(uri.as_str()),
+        )
+    }
+}
+
+impl DatedAction {}
+
+fn to_datatime(id: &ulid::Ulid) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp_millis(id.timestamp_ms().try_into().unwrap()).unwrap()
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct Data {
+    action: Action,
+    rpc_url: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    Simulate {
+        response: SimulateTransactionResponse,
+    },
+    Send {
+        response: GetTransactionResponseRaw,
+    },
+}
+
+impl Action {
+    pub fn type_str(&self) -> String {
+        match self {
+            Action::Simulate { .. } => "Simulate",
+            Action::Send { .. } => "Send    ",
+        }
+        .to_string()
+    }
+}
+
+impl From<SimulateTransactionResponse> for Action {
+    fn from(response: SimulateTransactionResponse) -> Self {
+        Self::Simulate { response }
+    }
+}
+
+impl TryFrom<GetTransactionResponse> for Action {
+    type Error = xdr::Error;
+    fn try_from(res: GetTransactionResponse) -> Result<Self, Self::Error> {
+        Ok(Self::Send {
+            response: GetTransactionResponseRaw {
+                created_at: res.created_at,
+                fee_bump: res.fee_bump,
+                tx_hash: res.tx_hash,
+                application_order: res.application_order,
+                status: res.status,
+                ledger: res.ledger,
+                envelope_xdr: res.envelope.as_ref().map(to_xdr).transpose()?,
+                result_xdr: res.result.as_ref().map(to_xdr).transpose()?,
+                result_meta_xdr: res.result_meta.as_ref().map(to_xdr).transpose()?,
+                events: None,
+                diagnostic_events_xdr: None,
+            },
+        })
+    }
+}
+
+fn to_xdr(data: &impl WriteXdr) -> Result<String, xdr::Error> {
+    data.to_xdr_base64(xdr::Limits::depth(XDR_DEPTH_LIMIT))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::test_utils::with_env_set;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn test_write_read() {
+        let t = assert_fs::TempDir::new().unwrap();
+        with_env_set("STELLAR_DATA_HOME", t.path(), || {
+            let rpc_uri = Url::from_str("http://localhost:8000").unwrap();
+            let sim = SimulateTransactionResponse::default();
+            let original_action: Action = sim.into();
+
+            let id = write(original_action.clone(), &rpc_uri.clone()).unwrap();
+            let (action, new_rpc_uri) = read(&id).unwrap();
+            assert_eq!(rpc_uri, new_rpc_uri);
+            match (action, original_action) {
+                (Action::Simulate { response: a }, Action::Simulate { response: b }) => {
+                    assert_eq!(a.min_resource_fee, b.min_resource_fee);
+                }
+                _ => panic!("Action mismatch"),
+            }
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn actionlog_write_redacts_rpc_url_password_on_disk() {
+        let t = assert_fs::TempDir::new().unwrap();
+        with_env_set("STELLAR_DATA_HOME", t.path(), || {
+            let rpc_uri =
+                Url::from_str("https://alice:supersecret@rpc.example.com/soroban/rpc").unwrap();
+            let action: Action = SimulateTransactionResponse::default().into();
+
+            let id = write(action, &rpc_uri).unwrap();
+            let file = actions_dir()
+                .unwrap()
+                .join(id.to_string())
+                .with_extension("json");
+            let contents = std::fs::read_to_string(&file).unwrap();
+
+            assert!(
+                !contents.contains("supersecret"),
+                "password leaked into action-log JSON: {contents}"
+            );
+            assert!(
+                contents.contains("alice"),
+                "username should be preserved: {contents}"
+            );
+            assert!(
+                contents.contains("redacted"),
+                "expected literal `redacted` placeholder: {contents}"
+            );
+            assert!(
+                contents.contains("rpc.example.com"),
+                "expected host to be preserved: {contents}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn actionlog_list_actions_renders_redacted_rpc_url() {
+        let t = assert_fs::TempDir::new().unwrap();
+        with_env_set("STELLAR_DATA_HOME", t.path(), || {
+            let rpc_uri =
+                Url::from_str("https://alice:supersecret@rpc.example.com/soroban/rpc").unwrap();
+            let action: Action = SimulateTransactionResponse::default().into();
+
+            write(action, &rpc_uri).unwrap();
+            let rendered = list_actions()
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            assert!(
+                !rendered.contains("supersecret"),
+                "password leaked into ls -l render: {rendered}"
+            );
+            assert!(
+                rendered.contains("alice:redacted"),
+                "expected `alice:redacted` in ls -l render: {rendered}"
+            );
+        });
+    }
+}
